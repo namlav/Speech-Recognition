@@ -1,0 +1,58 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+.env/
+.venv/
+
+# Environment variables
+.env
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Logs
+*.log
+
+# Machine Learning / Deep Learning Model Weights
+*.pt
+*.pth
+*.h5
+*.hdf5
+*.ckpt
+*.weights
+*.onnx
+model/**/*.pt
+model/**/*.pth
+
+# Speech Recognition / Audio files
+# ignore các file âm thanh (để tránh push file lớn lên git)
+*.wav
+*.mp3
+*.flac
+*.ogg
+
+# Data directory
+# Ignore toàn bộ dữ liệu trong thư mục data/ nhưng vẫn giữ lại thư mục này trên Git
+data/*
+!data/.gitkeep
+!data/README.md
+
+# Build / Distribution
+build/
+dist/
+*.egg-info/
