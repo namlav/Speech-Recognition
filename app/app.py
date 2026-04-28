@@ -1,20 +1,24 @@
+import sys
+import os
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+root_dir = os.path.dirname(current_dir)
+if root_dir not in sys.path:
+    sys.path.append(root_dir)
+
 import gradio as gr
 import time
 import random
-import os
-# from audio_processing.preprocess import process_audio  
-# from model.inference import predict_text
+from audio_processing.preprocess import preprocess
+from audio_processing.visualize import plot_waveform, plot_mfcc
 
 # ==========================================
-# PHẦN GIẢ LẬP (MOCKING) KÈM HIỆU ỨNG THỜI GIAN THỰC
+# PHẦN GIẢ LẬP KÈM HIỆU ỨNG THỜI GIAN THỰC & VẼ BIỂU ĐỒ
 # ==========================================
 def mock_speech_to_text_stream(audio_filepath, speech_type):
-    """
-    Hàm này dùng 'yield' thay vì 'return' để tạo hiệu ứng chữ hiện ra từng từ (streaming).
-    Khi ghép code thật, mô hình RNN của bạn B cũng có thể xuất ra từng token một cách tương tự.
-    """
     if audio_filepath is None:
-        yield "Vui lòng ghi âm hoặc tải file lên.", "0%", gr.update(visible=False)
+        # Nếu không có file, trả về 5 giá trị rỗng/None tương ứng với 5 Output
+        yield "Vui lòng ghi âm hoặc tải file lên.", "0%", gr.update(visible=False), None, None
         return
 
     # Giả lập thời gian model bắt đầu phân tích
@@ -28,27 +32,34 @@ def mock_speech_to_text_stream(audio_filepath, speech_type):
     current_text = ""
     words = full_text.split(" ")
     
-    # 1. Hiệu ứng Streaming: Hiện từng chữ và cập nhật độ tin cậy liên tục
+    # 1. Hiệu ứng Streaming: Chữ chạy ra từ từ
     for word in words:
         current_text += word + " "
-        # Giả lập độ tin cậy dao động từ 88% đến 98%
         confidence = f"{random.uniform(88.5, 98.9):.1f}%" 
         
-        # Trả về 3 giá trị tương ứng với 3 output: Text, Độ tin cậy, và Nút Tải file (ẩn)
-        yield current_text.strip(), confidence, gr.update(visible=False)
-        time.sleep(0.15) # Tốc độ gõ chữ
+        # TRONG LÚC CHỮ ĐANG CHẠY: Chưa hiện biểu đồ (trả về None, None)
+        yield current_text.strip(), confidence, gr.update(visible=False), None, None
+        time.sleep(0.15) 
 
-    # 2. Tạo file .txt để người dùng tải về khi đã nhận diện xong
+    # 2. Xử lý lưu file text kết quả
     file_path = "ket_qua_nhan_dien.txt"
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(current_text.strip())
         
-    # Khi hoàn thành, hiện nút tải file lên
+    # 3. GỌI CODE CỦA PERSON A ĐỂ VẼ BIỂU ĐỒ
+    try:
+        fig_wave = plot_waveform(audio_filepath)
+        fig_mfcc = plot_mfcc(audio_filepath)
+    except Exception as e:
+        print("Lỗi vẽ biểu đồ:", e)
+        fig_wave, fig_mfcc = None, None
+
+    # KHI HOÀN THÀNH: Trả về text cuối, độ tin cậy, nút tải file, VÀ 2 BIỂU ĐỒ
     final_confidence = f"{random.uniform(94.0, 98.9):.1f}%"
-    yield current_text.strip(), final_confidence, gr.update(value=file_path, visible=True)
+    yield current_text.strip(), final_confidence, gr.update(value=file_path, visible=True), fig_wave, fig_mfcc
 
 # ==========================================
-# GIAO DIỆN HIỆN ĐẠI (GRADIO 6.x)
+# GIAO DIỆN HIỆN ĐẠI
 # ==========================================
 custom_theme = gr.themes.Soft(
     primary_hue="indigo",
@@ -92,24 +103,32 @@ with gr.Blocks(title="AI Speech Recognition") as demo:
             )
             
             with gr.Row():
-                # Ô hiển thị độ tin cậy
                 confidence_output = gr.Textbox(label="Độ tin cậy (Confidence)", lines=1)
+                download_output = gr.File(label="Tải kết quả", visible=False)
                 
-            # Nút tải file (Mặc định ẩn, chỉ hiện khi chạy xong)
-            download_output = gr.File(label="Tải kết quả", visible=False)
+    # ĐƯA BIỂU ĐỒ XUỐNG DƯỚI CÙNG ĐỂ RỘNG RÃI
+    with gr.Accordion("Xem chi tiết phân tích âm thanh", open=True):
+        with gr.Row():
+            # Chia cột nhỏ để dễ quản lý tiêu đề cho từng hình
+            with gr.Column():
+                # Tự tạo tiêu đề bằng Markdown
+                gr.Markdown("<h3 style='text-align: center; color: #4f46e5;'>Biểu đồ Sóng âm</h3>")
+                waveform_plot = gr.Plot(show_label=False)
+                
+            with gr.Column():
+                gr.Markdown("<h3 style='text-align: center; color: #4f46e5;'>Đặc trưng MFCC (Nạp vào Model)</h3>")
+                mfcc_plot = gr.Plot(show_label=False)
 
-    # BẮT SỰ KIỆN: Kết nối Nút bấm với Hàm giả lập
     submit_btn.click(
         fn=mock_speech_to_text_stream, 
         inputs=[audio_input, speech_type], 
-        outputs=[text_output, confidence_output, download_output]
+        outputs=[text_output, confidence_output, download_output, waveform_plot, mfcc_plot]
     )
     
-    # Reset toàn bộ giao diện
     clear_btn.click(
-        lambda: (None, "Đơn giọng nói (Single-speaker)", "", "", gr.update(visible=False)), 
+        lambda: (None, "Đơn giọng nói (Single-speaker)", "", "", gr.update(visible=False), None, None), 
         inputs=None, 
-        outputs=[audio_input, speech_type, text_output, confidence_output, download_output]
+        outputs=[audio_input, speech_type, text_output, confidence_output, download_output, waveform_plot, mfcc_plot]
     )
 
 if __name__ == "__main__":
