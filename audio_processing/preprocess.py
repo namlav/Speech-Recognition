@@ -3,7 +3,7 @@ import numpy as np
 
 SAMPLE_RATE = 16000
 N_MFCC = 13
-MAX_LEN = 200  # padding length
+MAX_LEN = 200
 
 
 def load_audio(file_path):
@@ -11,13 +11,12 @@ def load_audio(file_path):
     return audio
 
 
-def extract_features(audio):
+def extract_mfcc(audio):
     mfcc = librosa.feature.mfcc(y=audio, sr=SAMPLE_RATE, n_mfcc=N_MFCC)
-    mfcc = mfcc.T  # (time, features)
-    return mfcc
+    return mfcc.T  # (time, features)
 
 
-def pad_features(features):
+def pad_or_truncate(features):
     if len(features) < MAX_LEN:
         pad_width = MAX_LEN - len(features)
         features = np.pad(features, ((0, pad_width), (0, 0)))
@@ -28,12 +27,12 @@ def pad_features(features):
 
 def preprocess(file_path):
     audio = load_audio(file_path)
-    features = extract_features(audio)
-    features = pad_features(features)
-    return features
+    mfcc = extract_mfcc(audio)
+    mfcc = pad_or_truncate(mfcc)
+    return mfcc
 
 
 if __name__ == "__main__":
-    path = "../data/sample.wav"
+    path = "../data/vivos/train/waves/VIVOSSPK01/VIVOSSPK01_R001.wav"
     features = preprocess(path)
-    print("Feature shape:", features.shape)
+    print("Shape:", features.shape)

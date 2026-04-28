@@ -4,3 +4,4 @@ torch
 streamlit
 streamlit-webrtc
 soundfile
+matplotlib
