@@ -1,4 +1,24 @@
 # Speech-Recognition
-Đồ án môn Deep Learning
+Deep Learning project
 
-Data source: VIVOS Vietnamese Speech Corpus for ASR by Khoa D. Vo (kynthesis) from kaggle.com
+# Construction
+```text
+speech_recognition_project/
+│
+├── data/
+│   └── sample.wav
+│
+├── audio_processing/
+│   └── preprocess.py
+│
+├── model/
+│   └── inference.py
+│
+├── app/
+│   └── app.py
+│
+├── utils/
+│   └── config.py
+│
+└── requirements.txt
+```
