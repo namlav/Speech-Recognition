@@ -1,6 +1,5 @@
 numpy
 librosa
 torch
-streamlit
-streamlit-webrtc
 soundfile
+gradio
