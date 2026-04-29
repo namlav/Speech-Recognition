@@ -8,7 +8,7 @@ from streamlit_webrtc import webrtc_streamer, AudioProcessorBase
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from audio_processing.preprocess import preprocess
-from model.inference import predict
+from model.deepspeech import predict
 
 st.title("🎤 Speech Recognition Demo")
 
