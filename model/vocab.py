@@ -1,10 +1,16 @@
-BLANK = '<blank>'
+BLANK = '_'
 SPACE = ' '
+APOSTROPHE = "'"
 
-_chars = list('abcdefghijklmnopqrstuvwxyzđ')
-_vowels = list('áàảãạăắằẳẵặâấầẩẫậéèẻẽẹêếềểễệíìỉĩịóòỏõọôốồổỗộơớờởỡợúùủũụưứừửữựýỳỷỹỵ')
-
-VOCAB = [BLANK, SPACE] + _chars + _vowels
+# Standard DeepSpeech2 29-token English vocabulary (matching the checkpoint)
+# Blank must be at index 0 for CTC loss
+VOCAB = [
+    BLANK,        # 0
+    APOSTROPHE,   # 1
+    SPACE,        # 2
+    'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
+    'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+]
 
 char_to_int = {c: i for i, c in enumerate(VOCAB)}
 int_to_char = {i: c for i, c in enumerate(VOCAB)}
