@@ -1,7 +1,6 @@
 numpy
 librosa
 torch
-streamlit
-streamlit-webrtc
+gradio
 soundfile
 matplotlib
