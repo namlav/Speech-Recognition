@@ -7,8 +7,7 @@ from streamlit_webrtc import webrtc_streamer, AudioProcessorBase
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from audio_processing.preprocess import preprocess
-from model.deepspeech import predict
+from model.inferences import predict
 
 st.title("🎤 Speech Recognition Demo")
 
@@ -28,8 +27,7 @@ if mode == "Upload file":
         st.audio(path)
 
         if st.button("Transcribe File"):
-            features = preprocess(path)
-            text = predict(features)
+            text = predict(path)
             st.success(text)
 
 # =========================
@@ -57,8 +55,7 @@ else:
 
                 sf.write(temp_path, data, 16000)
 
-                features = preprocess(temp_path)
-                text = predict(features)
+                text = predict(temp_path)
 
                 print("Realtime:", text)
 

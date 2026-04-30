@@ -2,7 +2,7 @@ import librosa
 import numpy as np
 
 SAMPLE_RATE = 16000
-N_MFCC = 41
+N_MFCC = 13
 MAX_LEN = 200
 
 
