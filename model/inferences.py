@@ -1,58 +1,209 @@
+"""
+model/inferences.py
+===================
+Module dự đoán (Inference) cho bài toán Nhận diện Giọng nói.
+
+Cung cấp hàm predict(audio_path) để file app.py import và sử dụng:
+    from model.inferences import predict
+    text = predict("path/to/audio.wav")
+
+Quy trình:
+    1. Load trọng số mô hình đã huấn luyện (saved_models/model.pth).
+    2. Gọi preprocess(audio_path) để trích xuất đặc trưng MFCC (200, 13).
+    3. Đưa tensor qua mô hình → log-probabilities (200, num_classes).
+    4. Giải mã bằng thuật toán Greedy Decoder cho CTC → chuỗi văn bản.
+    5. Trả về chuỗi văn bản tiếng Việt.
+"""
+
+import os
+import sys
 import torch
-import librosa
-import streamlit as st
-from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
+import numpy as np
 
-# Cấu hình
-#   - Tiếng Anh: "facebook/wav2vec2-base-960h" (hoặc large)
-#   - Tiếng Việt: "nguyenvulebinh/wav2vec2-base-vietnamese-250h"
-MODEL_NAME = "facebook/wav2vec2-base-960h"
-SAMPLE_RATE = 16000
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+# Thêm thư mục gốc vào sys.path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from audio_processing.preprocess import preprocess
+from model.network import SpeechRecognitionModel
 
 
-@st.cache_resource
-def load_model():
-    """Load Wav2Vec2 model và processor (cached bởi Streamlit)."""
-    processor = Wav2Vec2Processor.from_pretrained(MODEL_NAME)
-    model = Wav2Vec2ForCTC.from_pretrained(MODEL_NAME)
-    model.to(DEVICE)
-    model.eval()
-    return processor, model
+# ================================================================
+# ĐƯỜNG DẪN MẶC ĐỊNH ĐẾN FILE TRỌNG SỐ
+# ================================================================
+MODEL_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..", "saved_models", "model.pth"
+)
+
+# Cache toàn cục: chỉ load model một lần, tránh load lại mỗi lần gọi predict
+_model = None
+_idx_to_char = None
+_device = None
 
 
+def _load_model(model_path: str = None):
+    """
+    Load mô hình và ánh xạ ký tự từ checkpoint đã lưu.
+    Sử dụng biến toàn cục để cache, chỉ load một lần duy nhất.
+
+    Tham số:
+        model_path: Đường dẫn tới file .pth (mặc định: saved_models/model.pth)
+
+    Trả về:
+        model:       PyTorch model đã load trọng số, ở chế độ eval().
+        idx_to_char: Dict {index: char} để decode.
+        device:      Thiết bị đang chạy (cpu/cuda).
+    """
+    global _model, _idx_to_char, _device
+
+    if _model is not None:
+        return _model, _idx_to_char, _device
+
+    if model_path is None:
+        model_path = MODEL_PATH
+
+    # Chuẩn hóa đường dẫn
+    model_path = os.path.abspath(model_path)
+
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(
+            f"Không tìm thấy file model tại: {model_path}\n"
+            f"Hãy chạy train.py trước để huấn luyện và lưu mô hình."
+        )
+
+    _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # ---- Load checkpoint ----
+    checkpoint = torch.load(model_path, map_location=_device, weights_only=False)
+
+    # Lấy các tham số từ checkpoint
+    num_classes = checkpoint["num_classes"]
+    hidden_dim = checkpoint.get("hidden_dim", 256)
+    num_layers = checkpoint.get("num_layers", 3)
+    dropout = checkpoint.get("dropout", 0.3)
+    _idx_to_char = checkpoint["idx_to_char"]
+
+    # ---- Khởi tạo lại kiến trúc và load trọng số ----
+    _model = SpeechRecognitionModel(
+        input_dim=13,
+        hidden_dim=hidden_dim,
+        num_layers=num_layers,
+        num_classes=num_classes,
+        dropout=dropout,
+    ).to(_device)
+
+    _model.load_state_dict(checkpoint["model_state_dict"])
+    _model.eval()  # Chế độ đánh giá (tắt dropout, batch norm)
+
+    print(f"[Inference] Đã load model từ: {model_path}")
+    print(f"[Inference] Device: {_device}, Classes: {num_classes}")
+
+    return _model, _idx_to_char, _device
+
+
+# ================================================================
+# THUẬT TOÁN GREEDY DECODER CHO CTC
+# ================================================================
+def greedy_decode(log_probs: torch.Tensor, idx_to_char: dict) -> str:
+    """
+    Giải mã đầu ra CTC bằng thuật toán Greedy Decoder.
+
+    Thuật toán:
+        1. Tại mỗi bước thời gian t, chọn ký tự có xác suất cao nhất (argmax).
+        2. Nén các ký tự trùng lặp liên tiếp (CTC collapsing):
+           - Ví dụ: "a a a" → "a"
+        3. Loại bỏ blank token (index 0):
+           - Blank token đại diện cho "không có ký tự" tại bước thời gian đó.
+
+    Tham số:
+        log_probs:   Tensor shape (T, num_classes) – log-probabilities.
+        idx_to_char: Dict {index: char} để ánh xạ index → ký tự.
+
+    Trả về:
+        Chuỗi văn bản đã giải mã.
+    """
+    # Bước 1: Lấy index có xác suất cao nhất tại mỗi bước thời gian
+    # argmax theo dim=1 (class) → shape (T,)
+    best_indices = torch.argmax(log_probs, dim=1).cpu().numpy()
+
+    # Bước 2 & 3: Collapse repeated chars & remove blanks
+    decoded_chars = []
+    prev_idx = -1  # Index trước đó (khởi tạo khác mọi index hợp lệ)
+
+    for idx in best_indices:
+        idx = int(idx)
+        # Bỏ qua blank token (index 0)
+        if idx == 0:
+            prev_idx = -1
+            continue
+        # Chỉ thêm nếu khác với ký tự liền trước (CTC collapsing)
+        if idx != prev_idx:
+            char = idx_to_char.get(idx, "")
+            if char and char != "<blank>":
+                decoded_chars.append(char)
+        prev_idx = idx
+
+    return "".join(decoded_chars)
+
+
+# ================================================================
+# HÀM DỰ ĐOÁN CHÍNH – predict()
+# ================================================================
 def predict(audio_path: str) -> str:
     """
-    Nhận đường dẫn file WAV, chạy Wav2Vec2 inference và trả về transcript.
+    Dự đoán văn bản từ file âm thanh .wav.
 
-    Parameters
-    ----------
-    audio_path : str
-        Đường dẫn đến file âm thanh (WAV, 16kHz mono).
+    Hàm này được import trực tiếp bởi app.py:
+        from model.inferences import predict
+        text = predict("path/to/audio.wav")
 
-    Returns
-    -------
-    str
-        Nội dung nhận dạng giọng nói.
+    Quy trình xử lý:
+        1. Load mô hình đã huấn luyện (cache lại sau lần load đầu).
+        2. Trích xuất đặc trưng MFCC từ file âm thanh (gọi preprocess).
+        3. Chạy inference qua mô hình.
+        4. Giải mã CTC Greedy → chuỗi văn bản.
+
+    Tham số:
+        audio_path: Đường dẫn tới file âm thanh .wav.
+
+    Trả về:
+        Chuỗi văn bản tiếng Việt đã nhận diện.
     """
-    processor, model = load_model()
+    # ---- Bước 1: Load mô hình (cache) ----
+    model, idx_to_char, device = _load_model()
 
-    # Load audio
-    speech, sr = librosa.load(audio_path, sr=SAMPLE_RATE)
+    # ---- Bước 2: Trích xuất đặc trưng MFCC ----
+    # preprocess() trả về numpy array shape (200, 13)
+    features = preprocess(audio_path)
 
-    # Preprocess + inference
-    inputs = processor(
-        speech,
-        sampling_rate=SAMPLE_RATE,
-        return_tensors="pt",
-        padding=True,
-    )
-    inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
+    # Chuyển thành tensor và thêm batch dimension
+    # (200, 13) → (1, 200, 13)
+    features_tensor = torch.tensor(features, dtype=torch.float32).unsqueeze(0).to(device)
 
+    # ---- Bước 3: Inference ----
     with torch.no_grad():
-        logits = model(**inputs).logits
+        # log_probs: (1, 200, num_classes)
+        log_probs = model(features_tensor)
 
-    predicted_ids = torch.argmax(logits, dim=-1)
-    transcription = processor.batch_decode(predicted_ids)[0]
+        # Bỏ batch dimension: (1, 200, num_classes) → (200, num_classes)
+        log_probs = log_probs.squeeze(0)
 
-    return transcription.lower()
+    # ---- Bước 4: Giải mã CTC Greedy ----
+    text = greedy_decode(log_probs, idx_to_char)
+
+    return text
+
+
+# ================================================================
+# CHẠY THỬ NGHIỆM
+# ================================================================
+if __name__ == "__main__":
+    # Test inference với một file âm thanh mẫu (nếu có)
+    test_audio = "data/vivos/test/waves/VIVOSSPK01/VIVOSSPK01_R001.wav"
+
+    if os.path.exists(test_audio):
+        result = predict(test_audio)
+        print(f"Kết quả nhận diện: \"{result}\"")
+    else:
+        print(f"File test không tồn tại: {test_audio}")
+        print("Hãy chạy train.py trước và kiểm tra đường dẫn dataset.")
