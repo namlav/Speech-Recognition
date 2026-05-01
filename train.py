@@ -266,7 +266,7 @@ def validate(model, dataloader, ctc_loss_fn, device, char_to_idx):
 def main():
     # -------------------- Cấu hình --------------------
     DATA_PATH = "data/vivos"                 # Đường dẫn tới dataset VIVOS
-    BATCH_SIZE = 16                          # Batch size
+    BATCH_SIZE = 128                          # Batch size
     NUM_EPOCHS = 50                          # Số epoch tối đa
     LEARNING_RATE = 1e-3                     # Learning rate khởi tạo
     HIDDEN_DIM = 256                         # Số unit ẩn LSTM
@@ -308,14 +308,16 @@ def main():
         batch_size=BATCH_SIZE,
         shuffle=True,
         collate_fn=lambda batch: collate_fn(batch, char_to_idx),
-        num_workers=0,   # Đặt 0 để tránh lỗi trên Windows
+        pin_memory=True,
+        num_workers=2,   # Đặt 0 để tránh lỗi trên Windows
     )
     test_loader = DataLoader(
         test_dataset,
         batch_size=BATCH_SIZE,
         shuffle=False,
         collate_fn=lambda batch: collate_fn(batch, char_to_idx),
-        num_workers=0,
+        pin_memory=True,
+        num_workers=1,
     )
 
     # ================================================================
