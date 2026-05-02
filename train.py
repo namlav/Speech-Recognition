@@ -4,63 +4,53 @@ train.py
 Script huấn luyện mô hình Nhận diện Giọng nói (Speech Recognition)
 sử dụng dataset VIVOS và kiến trúc Bidirectional LSTM + CTC Loss.
 
-Kiến thức áp dụng:
-  - Chương 3.5: Thuật toán tối ưu AdamW.
-  - Chương 3.6: Learning Rate Scheduler (ReduceLROnPlateau).
-  - Chương 5:   CTC Loss cho bài toán sequence-to-sequence không alignment.
-  - Kỹ thuật Dropout chống Overfitting (tích hợp trong model).
-
-Cách chạy:
-    python train.py
+Cải tiến cho dataset nhỏ (15h):
+  - Speed perturbation (0.9x, 1.0x, 1.1x) → dataset ×3
+  - SpecAugment (time masking + frequency masking)
+  - Delta + Delta-Delta features (13→39)
+  - Warmup + Cosine Annealing LR schedule
+  - Tăng dropout, giảm model size, giảm batch size
+  - Volume augmentation
 """
 
 import os
 import sys
+import math
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-# Thêm thư mục gốc vào sys.path để import được các module
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__))))
 
 from audio_processing.dataset import build_dataset
 from audio_processing.dataloader import VivosDataset
+from audio_processing.preprocess import MAX_LEN
 from model.network import SpeechRecognitionModel
 
 
 # ================================================================
-# 1. BỘ TỪ ĐIỂN KÝ TỰ TIẾNG VIỆT (Character Map)
+# 1. BỘ TỪ ĐIỂN KÝ TỰ TIẾNG VIỆT
 # ================================================================
-# CTC Blank token luôn ở index 0 (quy ước mặc định của PyTorch CTCLoss).
-# Các ký tự bắt đầu từ index 1.
 
 VIETNAMESE_CHARS = [
-    # Chữ thường không dấu
     "a", "b", "c", "d", "e", "g", "h", "i", "k", "l", "m",
     "n", "o", "p", "q", "r", "s", "t", "u", "v", "x", "y",
-    # Nguyên âm có dấu thanh: huyền (`), sắc ('), hỏi (?), ngã (~), nặng (.)
     "à", "á", "ả", "ã", "ạ",
     "è", "é", "ẻ", "ẽ", "ẹ",
     "ì", "í", "ỉ", "ĩ", "ị",
     "ò", "ó", "ỏ", "õ", "ọ",
     "ù", "ú", "ủ", "ũ", "ụ",
     "ỳ", "ý", "ỷ", "ỹ", "ỵ",
-    # Nguyên âm có mũ + dấu thanh
     "â", "ầ", "ấ", "ẩ", "ẫ", "ậ",
     "ê", "ề", "ế", "ể", "ễ", "ệ",
     "ô", "ồ", "ố", "ổ", "ỗ", "ộ",
-    # Nguyên âm có móc + dấu thanh
     "ă", "ằ", "ắ", "ẳ", "ẵ", "ặ",
     "ơ", "ờ", "ớ", "ở", "ỡ", "ợ",
     "ư", "ừ", "ứ", "ử", "ữ", "ự",
-    # Phụ âm đặc biệt
     "đ",
-    # Khoảng trắng và dấu câu
     " ",
     ".", ",", "?", "!", "-", "/", ":", ";",
-    # Chữ số
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
-    # Chữ hoa (nếu có trong dataset)
     "A", "B", "C", "D", "E", "G", "H", "I", "K", "L", "M",
     "N", "O", "P", "Q", "R", "S", "T", "U", "V", "X", "Y",
     "À", "Á", "Ả", "Ã", "Ạ",
@@ -80,97 +70,46 @@ VIETNAMESE_CHARS = [
 
 
 def build_char_map(chars: list) -> dict:
-    """
-    Xây dựng ánh xạ ký tự → số nguyên.
-    Index 0 dành cho CTC blank token.
-    Các ký tự bắt đầu từ index 1.
-
-    Tham số:
-        chars: Danh sách các ký tự tiếng Việt.
-
-    Trả về:
-        char_to_idx: dict {char: index}
-        idx_to_char: dict {index: char}
-        num_classes: tổng số class = len(chars) + 1 (blank)
-    """
-    # Blank token ở index 0
     char_to_idx = {"<blank>": 0}
     idx_to_char = {0: "<blank>"}
 
     for idx, char in enumerate(chars, start=1):
-        # Tránh trùng lặp nếu có
         if char not in char_to_idx:
             char_to_idx[char] = idx
             idx_to_char[idx] = char
 
-    # Đánh lại index liên tục
     unique_chars = list(char_to_idx.keys())
     char_to_idx = {c: i for i, c in enumerate(unique_chars)}
     idx_to_char = {i: c for i, c in enumerate(unique_chars)}
 
     num_classes = len(char_to_idx)
-    print(f"[CharMap] Tổng số class (gồm blank): {num_classes}")
-    print(f"[CharMap] Ký tự: {unique_chars}")
-
+    print(f"[CharMap] Total classes (incl. blank): {num_classes}")
     return char_to_idx, idx_to_char, num_classes
 
 
 def encode_text(text: str, char_to_idx: dict) -> list:
-    """
-    Mã hóa chuỗi văn bản thành danh sách chỉ số nguyên.
-    Bỏ qua các ký tự không có trong từ điển.
-
-    Tham số:
-        text:         Chuỗi văn bản tiếng Việt.
-        char_to_idx:  Ánh xạ ký tự → index.
-
-    Trả về:
-        Danh sách các index tương ứng.
-    """
     indices = []
     for ch in text:
         if ch in char_to_idx:
             indices.append(char_to_idx[ch])
-        # Bỏ qua các ký tự không có trong từ điển (fallback: bỏ qua)
     return indices
 
 
-def collate_fn(batch, char_to_idx: dict):
-    """
-    Hàm collate cho DataLoader – gom batch lại và chuẩn bị target cho CTCLoss.
-
-    CTCLoss yêu cầu:
-      - input_lengths:  độ dài thực tế của mỗi chuỗi input  (batch,)
-      - target_lengths: độ dài mỗi chuỗi nhãn               (batch,)
-      - targets:        các chỉ số nối liền nhau             (sum(target_lengths),)
-
-    Tham số:
-        batch:        List các tuple (features, text) từ VivosDataset.
-        char_to_idx:  Ánh xạ ký tự → index.
-
-    Trả về:
-        features:       Tensor (batch, 200, 13)
-        targets:        Tensor (sum(target_lengths),) – các index nối dài
-        input_lengths:  Tensor (batch,) – độ dài input (200 cho tất cả)
-        target_lengths: Tensor (batch,) – độ dài từng chuỗi nhãn
-    """
+def collate_fn(batch, char_to_idx: dict, max_len: int = MAX_LEN):
     features_list = []
     target_list = []
     target_lengths_list = []
 
     for features, text in batch:
         features_list.append(features)
-
         encoded = encode_text(text, char_to_idx)
-        target_list.extend(encoded)                      # Nối dài tất cả target
+        target_list.extend(encoded)
         target_lengths_list.append(len(encoded))
 
-    features = torch.stack(features_list, dim=0)              # (batch, 200, 13)
-    targets = torch.tensor(target_list, dtype=torch.long)    # (sum(target_len),)
-    input_lengths = torch.full(
-        (len(features_list),), 200, dtype=torch.long
-    )                                                         # (batch,) – mọi input dài 200
-    target_lengths = torch.tensor(target_lengths_list, dtype=torch.long)  # (batch,)
+    features = torch.stack(features_list, dim=0)
+    targets = torch.tensor(target_list, dtype=torch.long)
+    input_lengths = torch.full((len(features_list),), max_len, dtype=torch.long)
+    target_lengths = torch.tensor(target_lengths_list, dtype=torch.long)
 
     return features, targets, input_lengths, target_lengths
 
@@ -178,44 +117,26 @@ def collate_fn(batch, char_to_idx: dict):
 # ================================================================
 # 2. HÀM HUẤN LUYỆN MỘT EPOCH
 # ================================================================
-def train_one_epoch(
-    model, dataloader, ctc_loss_fn, optimizer, device, char_to_idx
-):
-    """
-    Huấn luyện một epoch.
-
-    Trả về:
-        average_loss: Loss trung bình trên toàn bộ epoch.
-    """
+def train_one_epoch(model, dataloader, ctc_loss_fn, optimizer, device, char_to_idx):
     model.train()
     total_loss = 0.0
     num_batches = 0
 
     for batch_data in dataloader:
         features, targets, input_lengths, target_lengths = batch_data
-
         features = features.to(device)
         targets = targets.to(device)
         input_lengths = input_lengths.to(device)
         target_lengths = target_lengths.to(device)
 
-        # ---- Forward ----
-        # log_probs: (batch, 200, num_classes)
         log_probs = model(features)
+        log_probs = log_probs.permute(1, 0, 2)  # (T, N, C)
 
-        # Chuyển về (T, N, C) = (200, batch, num_classes) cho CTCLoss
-        log_probs = log_probs.permute(1, 0, 2)  # (200, batch, num_classes)
-
-        # ---- Tính CTC Loss ----
         loss = ctc_loss_fn(log_probs, targets, input_lengths, target_lengths)
 
-        # ---- Backpropagation ----
         optimizer.zero_grad()
         loss.backward()
-
-        # Gradient clipping – tránh exploding gradient trong RNN
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-
         optimizer.step()
 
         total_loss += loss.item()
@@ -230,26 +151,19 @@ def train_one_epoch(
 # ================================================================
 @torch.no_grad()
 def validate(model, dataloader, ctc_loss_fn, device, char_to_idx):
-    """
-    Đánh giá mô hình trên tập validation.
-
-    Trả về:
-        average_loss: Loss trung bình trên tập validation.
-    """
     model.eval()
     total_loss = 0.0
     num_batches = 0
 
     for batch_data in dataloader:
         features, targets, input_lengths, target_lengths = batch_data
-
         features = features.to(device)
         targets = targets.to(device)
         input_lengths = input_lengths.to(device)
         target_lengths = target_lengths.to(device)
 
         log_probs = model(features)
-        log_probs = log_probs.permute(1, 0, 2)  # (T, N, C)
+        log_probs = log_probs.permute(1, 0, 2)
 
         loss = ctc_loss_fn(log_probs, targets, input_lengths, target_lengths)
 
@@ -261,142 +175,146 @@ def validate(model, dataloader, ctc_loss_fn, device, char_to_idx):
 
 
 # ================================================================
-# 4. HÀM CHÍNH – MAIN
+# 4. WARMUP + COSINE ANNEALING SCHEDULER
+# ================================================================
+def get_warmup_cosine_scheduler(optimizer, warmup_epochs, total_epochs, min_factor=0.01):
+    def lr_lambda(epoch):
+        if epoch < warmup_epochs:
+            return (epoch + 1) / warmup_epochs
+        progress = (epoch - warmup_epochs) / max(total_epochs - warmup_epochs, 1)
+        return min_factor + 0.5 * (1.0 - min_factor) * (1 + math.cos(math.pi * progress))
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+
+# ================================================================
+# 5. HÀM CHÍNH – MAIN
 # ================================================================
 def main():
-    # -------------------- Cấu hình --------------------
-    DATA_PATH = "data/vivos"                 # Đường dẫn tới dataset VIVOS
-    BATCH_SIZE = 128                          # Batch size
-    NUM_EPOCHS = 50                          # Số epoch tối đa
-    LEARNING_RATE = 1e-3                     # Learning rate khởi tạo
-    HIDDEN_DIM = 256                         # Số unit ẩn LSTM
-    NUM_LAYERS = 3                           # Số tầng LSTM
-    DROPOUT = 0.3                            # Tỉ lệ Dropout
-    WEIGHT_DECAY = 1e-4                      # Weight decay cho AdamW
-    SAVE_DIR = "saved_models"                # Thư mục lưu model
+    # ==================== CẤU HÌNH HUẤN LUYỆN ====================
+    DATA_PATH = "data/vivos"
+    BATCH_SIZE = 32                    # Giảm 128→32: regularization mạnh hơn
+    NUM_EPOCHS = 80                    # Tăng epoch vì có augmentation
+    LEARNING_RATE = 1e-3               # LR khởi tạo
+    HIDDEN_DIM = 256                   # Số unit ẩn LSTM
+    NUM_LAYERS = 2                     # Giảm 3→2: ~35% ít params hơn → ít overfit
+    DROPOUT = 0.4                      # Tăng 0.3→0.4
+    WEIGHT_DECAY = 1e-4                # Weight decay cho AdamW
+    WARMUP_EPOCHS = 5                  # Số epoch warmup
+    USE_DELTA = True                   # 13 MFCC → 39 features
+    SPEED_PERTURB = True               # 0.9x, 1.0x, 1.1x → dataset ×3
+    AUGMENT = True                     # Volume augmentation
+    INPUT_DIM = 39 if USE_DELTA else 13
+    SAVE_DIR = "saved_models"
     MODEL_PATH = os.path.join(SAVE_DIR, "model.pth")
+    MAX_SEQ_LEN = MAX_LEN             # 300 (tăng từ 200)
 
-    # Thiết bị
+    # ==================== Thiết bị ====================
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[Device] Sử dụng: {device}")
+    print(f"[Device] Using: {device}")
+    print(f"[Config] BATCH_SIZE={BATCH_SIZE}, EPOCHS={NUM_EPOCHS}, LR={LEARNING_RATE}")
+    print(f"[Config] HIDDEN_DIM={HIDDEN_DIM}, NUM_LAYERS={NUM_LAYERS}, DROPOUT={DROPOUT}")
+    print(f"[Config] USE_DELTA={USE_DELTA}, SPEED_PERTURB={SPEED_PERTURB}, INPUT_DIM={INPUT_DIM}")
+    print(f"[Config] MAX_SEQ_LEN={MAX_SEQ_LEN}")
 
-    # -------------------- Tạo thư mục lưu model --------------------
     os.makedirs(SAVE_DIR, exist_ok=True)
 
-    # ================================================================
-    # Bước 1: Xây dựng bộ từ điển ký tự
-    # ================================================================
+    # ==================== Bước 1: Từ điển ký tự ====================
     char_to_idx, idx_to_char, num_classes = build_char_map(VIETNAMESE_CHARS)
 
-    # ================================================================
-    # Bước 2: Tải dữ liệu VIVOS
-    # ================================================================
-    print("\n[Data] Đang tải dữ liệu VIVOS...")
+    # ==================== Bước 2: Tải dữ liệu ====================
+    print("\n[Data] Loading VIVOS dataset...")
     train_data = build_dataset(DATA_PATH, "train")
-    test_data = build_dataset(DATA_PATH, "test")  # VIVOS có split "test"
+    test_data = build_dataset(DATA_PATH, "test")
+    print(f"[Data] Train samples (original): {len(train_data)}")
+    print(f"[Data] Test samples:        {len(test_data)}")
 
-    print(f"[Data] Train samples: {len(train_data)}")
-    print(f"[Data] Test samples:  {len(test_data)}")
+    # Train dataset: speed perturbation + augmentation
+    train_dataset = VivosDataset(
+        train_data,
+        precompute=True,
+        use_delta=USE_DELTA,
+        speed_perturb=SPEED_PERTURB,
+        augment=AUGMENT,
+    )
 
-    # Tạo Dataset PyTorch
-    train_dataset = VivosDataset(train_data)
-    test_dataset = VivosDataset(test_data)
+    # Test dataset: KHÔNG augmentation
+    test_dataset = VivosDataset(
+        test_data,
+        precompute=True,
+        use_delta=USE_DELTA,
+        speed_perturb=False,
+        augment=False,
+    )
 
-    # Tạo DataLoader với collate_fn tùy chỉnh
     train_loader = DataLoader(
         train_dataset,
         batch_size=BATCH_SIZE,
         shuffle=True,
-        collate_fn=lambda batch: collate_fn(batch, char_to_idx),
+        collate_fn=lambda batch: collate_fn(batch, char_to_idx, MAX_SEQ_LEN),
         pin_memory=True,
-        num_workers=2,   # Đặt 0 để tránh lỗi trên Windows
+        num_workers=2,
     )
     test_loader = DataLoader(
         test_dataset,
         batch_size=BATCH_SIZE,
         shuffle=False,
-        collate_fn=lambda batch: collate_fn(batch, char_to_idx),
+        collate_fn=lambda batch: collate_fn(batch, char_to_idx, MAX_SEQ_LEN),
         pin_memory=True,
         num_workers=1,
     )
 
-    # ================================================================
-    # Bước 3: Khởi tạo mô hình
-    # ================================================================
-    print("\n[Model] Khởi tạo SpeechRecognitionModel...")
+    # ==================== Bước 3: Khởi tạo mô hình ====================
+    print("\n[Model] Initializing SpeechRecognitionModel...")
     model = SpeechRecognitionModel(
-        input_dim=13,
+        input_dim=INPUT_DIM,
         hidden_dim=HIDDEN_DIM,
         num_layers=NUM_LAYERS,
         num_classes=num_classes,
         dropout=DROPOUT,
     ).to(device)
 
-    # In tổng quan kiến trúc
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"[Model] Tổng tham số:     {total_params:,}")
-    print(f"[Model] Tham số huấn luyện: {trainable_params:,}")
+    print(f"[Model] Total params:        {total_params:,}")
+    print(f"[Model] Trainable params:    {trainable_params:,}")
 
-    # ================================================================
-    # Bước 4: Hàm mất mát CTC (Connectionist Temporal Classification)
-    #         Chương 5 – CTC Loss chuyên dụng cho bài toán nhận diện giọng nói.
-    #         blank=0: token blank ở index 0 trong char_to_idx.
-    #         zero_infinity=True: tránh loss = inf khi không có đường alignment hợp lệ.
-    # ================================================================
+    # ==================== Bước 4: CTC Loss ====================
     ctc_loss_fn = nn.CTCLoss(blank=0, zero_infinity=True)
 
-    # ================================================================
-    # Bước 5: Optimizer – AdamW (Chương 3.5)
-    #         AdamW tách weight decay khỏi gradient update, cho hiệu quả
-    #         regularization tốt hơn Adam truyền thống.
-    # ================================================================
+    # ==================== Bước 5: Optimizer – AdamW ====================
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=LEARNING_RATE,
         weight_decay=WEIGHT_DECAY,
     )
 
-    # ================================================================
-    # Bước 6: Learning Rate Scheduler – ReduceLROnPlateau (Chương 3.6)
-    #         Giảm learning rate khi loss trên validation plateau (không cải thiện).
-    #         factor=0.5: giảm một nửa LR.
-    #         patience=5:   chờ 5 epoch không cải thiện mới giảm.
-    # ================================================================
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    # ==================== Bước 6: Warmup + Cosine Annealing ====================
+    scheduler = get_warmup_cosine_scheduler(
         optimizer,
-        mode="min",         # Theo dõi loss (càng thấp càng tốt)
-        factor=0.5,         # Giảm LR xuống 1/2
-        patience=5,         # Chờ 5 epoch
-        min_lr=1e-6,        # Ngưỡng dưới của LR
+        warmup_epochs=WARMUP_EPOCHS,
+        total_epochs=NUM_EPOCHS,
+        min_factor=0.01,
     )
 
-    # ================================================================
-    # Bước 7: Vòng lặp huấn luyện
-    # ================================================================
+    # ==================== Bước 7: Vòng lặp huấn luyện ====================
     print("\n" + "=" * 60)
-    print("BẮT ĐẦU HUẤN LUYỆN")
+    print("START TRAINING")
     print("=" * 60)
 
     best_val_loss = float("inf")
     patience_counter = 0
-    EARLY_STOP_PATIENCE = 10  # Dừng sớm nếu không cải thiện sau 10 epoch
+    EARLY_STOP_PATIENCE = 15  # Tăng patience vì loss dao động hơn với augmentation
 
     for epoch in range(1, NUM_EPOCHS + 1):
-        # ---- Huấn luyện ----
         train_loss = train_one_epoch(
             model, train_loader, ctc_loss_fn, optimizer, device, char_to_idx
         )
 
-        # ---- Validation ----
         val_loss = validate(
             model, test_loader, ctc_loss_fn, device, char_to_idx
         )
 
-        # ---- Cập nhật Scheduler ----
-        scheduler.step(val_loss)
-
-        # Lấy LR hiện tại để in
+        scheduler.step()
         current_lr = optimizer.param_groups[0]["lr"]
 
         print(
@@ -406,7 +324,6 @@ def main():
             f"LR: {current_lr:.2e}"
         )
 
-        # ---- Lưu model tốt nhất ----
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             patience_counter = 0
@@ -424,20 +341,21 @@ def main():
                     "hidden_dim": HIDDEN_DIM,
                     "num_layers": NUM_LAYERS,
                     "dropout": DROPOUT,
+                    "input_dim": INPUT_DIM,
                 },
                 MODEL_PATH,
             )
-            print(f"  >>> Đã lưu model tốt nhất (Val Loss: {val_loss:.4f})")
+            print(f"  >>> Saved best model (Val Loss: {val_loss:.4f})")
         else:
             patience_counter += 1
             if patience_counter >= EARLY_STOP_PATIENCE:
-                print(f"\n[Early Stopping] Dừng sau {epoch} epoch (không cải thiện).")
+                print(f"\n[Early Stopping] Stopped at epoch {epoch} (no improvement).")
                 break
 
     print("\n" + "=" * 60)
-    print(f"HOÀN THÀNH HUẤN LUYỆN")
+    print(f"TRAINING COMPLETED")
     print(f"Best Val Loss: {best_val_loss:.4f}")
-    print(f"Model đã lưu tại: {MODEL_PATH}")
+    print(f"Model saved at: {MODEL_PATH}")
     print("=" * 60)
 
 

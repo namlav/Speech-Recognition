@@ -23,7 +23,7 @@ import numpy as np
 # Thêm thư mục gốc vào sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from audio_processing.preprocess import preprocess
+from audio_processing.preprocess import preprocess, MAX_LEN
 from model.network import SpeechRecognitionModel
 
 
@@ -81,11 +81,12 @@ def _load_model(model_path: str = None):
     hidden_dim = checkpoint.get("hidden_dim", 256)
     num_layers = checkpoint.get("num_layers", 3)
     dropout = checkpoint.get("dropout", 0.3)
+    input_dim = checkpoint.get("input_dim", 13)
     _idx_to_char = checkpoint["idx_to_char"]
 
     # ---- Khởi tạo lại kiến trúc và load trọng số ----
     _model = SpeechRecognitionModel(
-        input_dim=13,
+        input_dim=input_dim,
         hidden_dim=hidden_dim,
         num_layers=num_layers,
         num_classes=num_classes,
@@ -95,7 +96,7 @@ def _load_model(model_path: str = None):
     _model.load_state_dict(checkpoint["model_state_dict"])
     _model.eval()  # Chế độ đánh giá (tắt dropout, batch norm)
 
-    print(f"[Inference] Đã load model từ: {model_path}")
+    print(f"[Inference] Loaded model from: {model_path}")
     print(f"[Inference] Device: {_device}, Classes: {num_classes}")
 
     return _model, _idx_to_char, _device
@@ -173,11 +174,14 @@ def predict(audio_path: str) -> str:
     model, idx_to_char, device = _load_model()
 
     # ---- Bước 2: Trích xuất đặc trưng MFCC ----
-    # preprocess() trả về numpy array shape (200, 13)
-    features = preprocess(audio_path)
+    # Tự động chọn use_delta dựa trên input_dim của model
+    input_dim = model.input_dim
+    use_delta = (input_dim == 39)
+
+    # preprocess() trả về numpy array shape (MAX_LEN, input_dim)
+    features = preprocess(audio_path, use_delta=use_delta, max_len=MAX_LEN)
 
     # Chuyển thành tensor và thêm batch dimension
-    # (200, 13) → (1, 200, 13)
     features_tensor = torch.tensor(features, dtype=torch.float32).unsqueeze(0).to(device)
 
     # ---- Bước 3: Inference ----
@@ -203,7 +207,7 @@ if __name__ == "__main__":
 
     if os.path.exists(test_audio):
         result = predict(test_audio)
-        print(f"Kết quả nhận diện: \"{result}\"")
+        print(f"Recognition result: \"{result}\"")
     else:
-        print(f"File test không tồn tại: {test_audio}")
-        print("Hãy chạy train.py trước và kiểm tra đường dẫn dataset.")
+        print(f"Test file not found: {test_audio}")
+        print("Run train.py first and check the dataset path.")
