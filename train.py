@@ -192,12 +192,12 @@ def get_warmup_cosine_scheduler(optimizer, warmup_epochs, total_epochs, min_fact
 def main():
     # ==================== CẤU HÌNH HUẤN LUYỆN ====================
     DATA_PATH = "data/vivos"
-    BATCH_SIZE = 32                    # Giảm 128→32: regularization mạnh hơn
-    NUM_EPOCHS = 80                    # Tăng epoch vì có augmentation
+    BATCH_SIZE = 64                    # Phù hợp với 16GB VRAM của Colab T4
+    NUM_EPOCHS = 100                   # Tăng số epoch
     LEARNING_RATE = 1e-3               # LR khởi tạo
-    HIDDEN_DIM = 256                   # Số unit ẩn LSTM
-    NUM_LAYERS = 2                     # Giảm 3→2: ~35% ít params hơn → ít overfit
-    DROPOUT = 0.4                      # Tăng 0.3→0.4
+    HIDDEN_DIM = 512                   # Tăng số hidden dim cho mô hình sâu hơn
+    NUM_LAYERS = 3                     # Tăng số lớp cho Colab T4
+    DROPOUT = 0.3                      # Droput vừa phải
     WEIGHT_DECAY = 1e-4                # Weight decay cho AdamW
     WARMUP_EPOCHS = 5                  # Số epoch warmup
     USE_DELTA = True                   # 13 MFCC → 39 features
