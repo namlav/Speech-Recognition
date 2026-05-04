@@ -192,7 +192,7 @@ def get_warmup_cosine_scheduler(optimizer, warmup_epochs, total_epochs, min_fact
 def main():
     # ==================== CẤU HÌNH HUẤN LUYỆN ====================
     DATA_PATH = "data/vivos"
-    BATCH_SIZE = 64                    # Phù hợp với 16GB VRAM của Colab T4
+    BATCH_SIZE = 128                    # Phù hợp với 16GB VRAM của Colab T4
     NUM_EPOCHS = 100                   # Tăng số epoch
     LEARNING_RATE = 1e-3               # LR khởi tạo
     HIDDEN_DIM = 512                   # Tăng số hidden dim cho mô hình sâu hơn

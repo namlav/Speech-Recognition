@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from collections import OrderedDict
 
 from model.specaugment import SpecAugment
 
@@ -101,7 +102,7 @@ class SpeechRecognitionModel(nn.Module):
                            bidirectional=True, batch_norm=True)
             rnns.append((f"{x+1}", rnn))
             
-        self.rnns = nn.Sequential(nn.OrderedDict(rnns))
+        self.rnns = nn.Sequential(OrderedDict(rnns))
         self.fc = nn.Sequential(
             SequenceWise(nn.BatchNorm1d(hidden_dim)),
             nn.Linear(hidden_dim, num_classes, bias=False)
