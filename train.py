@@ -132,6 +132,8 @@ def train_one_epoch(model, dataloader, ctc_loss_fn, optimizer, device, char_to_i
         log_probs = model(features)
         log_probs = log_probs.permute(1, 0, 2)  # (T, N, C)
 
+        input_lengths = torch.full((features.size(0),), log_probs.size(0), dtype=torch.long, device=device)
+
         loss = ctc_loss_fn(log_probs, targets, input_lengths, target_lengths)
 
         optimizer.zero_grad()
@@ -164,6 +166,8 @@ def validate(model, dataloader, ctc_loss_fn, device, char_to_idx):
 
         log_probs = model(features)
         log_probs = log_probs.permute(1, 0, 2)
+
+        input_lengths = torch.full((features.size(0),), log_probs.size(0), dtype=torch.long, device=device)
 
         loss = ctc_loss_fn(log_probs, targets, input_lengths, target_lengths)
 

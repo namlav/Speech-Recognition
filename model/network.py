@@ -70,6 +70,7 @@ class SpeechRecognitionModel(nn.Module):
     ):
         super(SpeechRecognitionModel, self).__init__()
         self.dropout_rate = dropout
+        self.input_dim = input_dim
         
         # SpecAugment
         self.specaugment = SpecAugment(
