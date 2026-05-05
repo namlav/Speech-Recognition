@@ -51,21 +51,6 @@ VIETNAMESE_CHARS = [
     " ",
     ".", ",", "?", "!", "-", "/", ":", ";",
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
-    "A", "B", "C", "D", "E", "G", "H", "I", "K", "L", "M",
-    "N", "O", "P", "Q", "R", "S", "T", "U", "V", "X", "Y",
-    "À", "Á", "Ả", "Ã", "Ạ",
-    "È", "É", "Ẻ", "Ẽ", "Ẹ",
-    "Ì", "Í", "Ỉ", "Ĩ", "Ị",
-    "Ò", "Ó", "Ỏ", "Õ", "Ọ",
-    "Ù", "Ú", "Ủ", "Ũ", "Ụ",
-    "Ỳ", "Ý", "Ỷ", "Ỹ", "Ỵ",
-    "Â", "Ầ", "Ấ", "Ẩ", "Ẫ", "Ậ",
-    "Ê", "Ề", "Ế", "Ể", "Ễ", "Ệ",
-    "Ô", "Ồ", "Ố", "Ổ", "Ỗ", "Ộ",
-    "Ă", "Ằ", "Ắ", "Ẳ", "Ẵ", "Ặ",
-    "Ơ", "Ờ", "Ớ", "Ở", "Ỡ", "Ợ",
-    "Ư", "Ừ", "Ứ", "Ử", "Ữ", "Ự",
-    "Đ",
 ]
 
 
@@ -204,10 +189,10 @@ def main():
     DATA_PATH = "data/vivos"
     BATCH_SIZE = 64                    # Phù hợp với 16GB VRAM của Colab T4
     NUM_EPOCHS = 100                   # Tăng số epoch
-    LEARNING_RATE = 5e-4               # Lower LR for stability
-    HIDDEN_DIM = 768                   # Tăng số hidden dim cho mô hình sâu hơn
+    LEARNING_RATE = 3e-4               # Lower LR for stability
+    HIDDEN_DIM = 512                   # Tăng số hidden dim cho mô hình sâu hơn
     NUM_LAYERS = 3                     # Tăng số lớp cho Colab T4
-    DROPOUT = 0.3                      # Droput vừa phải
+    DROPOUT = 0.4                      # Droput vừa phải
     WEIGHT_DECAY = 1e-4                # Weight decay cho AdamW
     WARMUP_EPOCHS = 5                  # Số epoch warmup
     USE_DELTA = True                   # 13 MFCC → 39 features
