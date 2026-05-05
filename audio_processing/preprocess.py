@@ -24,12 +24,15 @@ def extract_mfcc_with_delta(audio, sr=SAMPLE_RATE):
     return stacked.T  # (time, n_mfcc*3)
 
 
-def pad_or_truncate(features, max_len=MAX_LEN):
-    if len(features) < max_len:
-        pad_width = max_len - len(features)
+def pad_or_truncate(features, max_len=MAX_LEN, return_length=False):
+    orig_len = len(features)
+    if orig_len < max_len:
+        pad_width = max_len - orig_len
         features = np.pad(features, ((0, pad_width), (0, 0)))
     else:
         features = features[:max_len]
+    if return_length:
+        return features, min(orig_len, max_len)
     return features
 
 
@@ -48,7 +51,7 @@ def apply_gain_augmentation(audio, max_gain_db=3.0):
     return audio * scale
 
 
-def preprocess(file_path, use_delta=True, max_len=MAX_LEN, apply_gain=False):
+def preprocess(file_path, use_delta=True, max_len=MAX_LEN, apply_gain=False, return_length=False):
     audio = load_audio(file_path)
     if apply_gain:
         audio = apply_gain_augmentation(audio)
@@ -56,12 +59,15 @@ def preprocess(file_path, use_delta=True, max_len=MAX_LEN, apply_gain=False):
         features = extract_mfcc_with_delta(audio)
     else:
         features = extract_mfcc(audio)
+    if return_length:
+        features, length = pad_or_truncate(features, max_len, return_length=True)
+        return features, length
     features = pad_or_truncate(features, max_len)
     return features
 
 
 def preprocess_with_speed(file_path, use_delta=True, max_len=MAX_LEN,
-                          speed_factor=1.0, apply_gain=True):
+                          speed_factor=1.0, apply_gain=True, return_length=False):
     audio = load_audio(file_path)
     if speed_factor != 1.0:
         audio = speed_perturb_audio(audio, speed_factor)
@@ -71,6 +77,9 @@ def preprocess_with_speed(file_path, use_delta=True, max_len=MAX_LEN,
         features = extract_mfcc_with_delta(audio)
     else:
         features = extract_mfcc(audio)
+    if return_length:
+        features, length = pad_or_truncate(features, max_len, return_length=True)
+        return features, length
     features = pad_or_truncate(features, max_len)
     return features
 

@@ -99,16 +99,19 @@ def collate_fn(batch, char_to_idx: dict, max_len: int = MAX_LEN):
     features_list = []
     target_list = []
     target_lengths_list = []
+    input_lengths_list = []
 
-    for features, text in batch:
+    for features, text, length in batch:
         features_list.append(features)
         encoded = encode_text(text, char_to_idx)
         target_list.extend(encoded)
         target_lengths_list.append(len(encoded))
+        input_lengths_list.append(length)
 
     features = torch.stack(features_list, dim=0)
     targets = torch.tensor(target_list, dtype=torch.long)
-    input_lengths = torch.full((len(features_list),), max_len, dtype=torch.long)
+    # Time length after first conv layer (stride=2 on time axis): floor((T + 1) / 2)
+    input_lengths = torch.tensor([(l + 1) // 2 for l in input_lengths_list], dtype=torch.long)
     target_lengths = torch.tensor(target_lengths_list, dtype=torch.long)
 
     return features, targets, input_lengths, target_lengths
@@ -134,8 +137,6 @@ def train_one_epoch(model, dataloader, ctc_loss_fn, optimizer, device, char_to_i
         with torch.amp.autocast('cuda', enabled=(device.type == 'cuda')):
             log_probs = model(features)
             log_probs = log_probs.permute(1, 0, 2)  # (T, N, C)
-
-            input_lengths = torch.full((features.size(0),), log_probs.size(0), dtype=torch.long, device=device)
 
             loss = ctc_loss_fn(log_probs, targets, input_lengths, target_lengths)
 
@@ -173,8 +174,6 @@ def validate(model, dataloader, ctc_loss_fn, device, char_to_idx):
 
         log_probs = model(features)
         log_probs = log_probs.permute(1, 0, 2)
-
-        input_lengths = torch.full((features.size(0),), log_probs.size(0), dtype=torch.long, device=device)
 
         loss = ctc_loss_fn(log_probs, targets, input_lengths, target_lengths)
 

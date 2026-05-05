@@ -18,6 +18,7 @@ class VivosDataset(Dataset):
         if precompute:
             self.features = []
             self.texts = []
+            self.lengths = []
 
             speeds = [0.9, 1.0, 1.1] if speed_perturb else [1.0]
 
@@ -25,14 +26,15 @@ class VivosDataset(Dataset):
                 feats = []
                 audio_path = sample["audio"]
                 for sp in speeds:
-                    feat = preprocess_with_speed(
+                    feat, length = preprocess_with_speed(
                         audio_path,
                         use_delta=use_delta,
                         max_len=MAX_LEN,
                         speed_factor=sp,
                         apply_gain=augment and sp != 1.0,
+                        return_length=True,
                     )
-                    feats.append((torch.tensor(feat, dtype=torch.float32), sample["text"]))
+                    feats.append((torch.tensor(feat, dtype=torch.float32), sample["text"], length))
                 return feats
 
             num_workers = os.cpu_count() or 2
@@ -41,9 +43,10 @@ class VivosDataset(Dataset):
                 results = list(executor.map(process_sample, dataset))
                 
             for res in results:
-                for feat, text in res:
+                for feat, text, length in res:
                     self.features.append(feat)
                     self.texts.append(text)
+                    self.lengths.append(length)
 
             print(f"[Dataset] Precomputed {len(self.features)} MFCC samples"
                   f" (speed_perturb={speed_perturb}, use_delta={use_delta})")
@@ -53,18 +56,19 @@ class VivosDataset(Dataset):
 
     def __getitem__(self, idx):
         if self.precompute:
-            return self.features[idx], self.texts[idx]
+            return self.features[idx], self.texts[idx], self.lengths[idx]
         else:
             from audio_processing.preprocess import preprocess_with_speed
             sample = self.dataset[idx]
             sp = 1.0
             if self.speed_perturb:
                 sp = np.random.choice([0.9, 1.0, 1.1])
-            features = preprocess_with_speed(
+            features, length = preprocess_with_speed(
                 sample["audio"],
                 use_delta=self.use_delta,
                 max_len=MAX_LEN,
                 speed_factor=sp,
                 apply_gain=self.augment,
+                return_length=True,
             )
-            return torch.tensor(features, dtype=torch.float32), sample["text"]
+            return torch.tensor(features, dtype=torch.float32), sample["text"], length
