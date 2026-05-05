@@ -117,7 +117,7 @@ def collate_fn(batch, char_to_idx: dict, max_len: int = MAX_LEN):
 # ================================================================
 # 2. HÀM HUẤN LUYỆN MỘT EPOCH
 # ================================================================
-def train_one_epoch(model, dataloader, ctc_loss_fn, optimizer, device, char_to_idx):
+def train_one_epoch(model, dataloader, ctc_loss_fn, optimizer, device, char_to_idx, scaler):
     model.train()
     total_loss = 0.0
     num_batches = 0
@@ -129,17 +129,24 @@ def train_one_epoch(model, dataloader, ctc_loss_fn, optimizer, device, char_to_i
         input_lengths = input_lengths.to(device)
         target_lengths = target_lengths.to(device)
 
-        log_probs = model(features)
-        log_probs = log_probs.permute(1, 0, 2)  # (T, N, C)
+        optimizer.zero_grad(set_to_none=True)
 
-        input_lengths = torch.full((features.size(0),), log_probs.size(0), dtype=torch.long, device=device)
+        with torch.cuda.amp.autocast(enabled=(device.type == 'cuda')):
+            log_probs = model(features)
+            log_probs = log_probs.permute(1, 0, 2)  # (T, N, C)
 
-        loss = ctc_loss_fn(log_probs, targets, input_lengths, target_lengths)
+            input_lengths = torch.full((features.size(0),), log_probs.size(0), dtype=torch.long, device=device)
 
-        optimizer.zero_grad()
-        loss.backward()
+            loss = ctc_loss_fn(log_probs, targets, input_lengths, target_lengths)
+
+        scaler.scale(loss).backward()
+        
+        # Unscales the gradients of optimizer's assigned params in-place
+        scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-        optimizer.step()
+        
+        scaler.step(optimizer)
+        scaler.update()
 
         total_loss += loss.item()
         num_batches += 1
@@ -196,7 +203,7 @@ def get_warmup_cosine_scheduler(optimizer, warmup_epochs, total_epochs, min_fact
 def main():
     # ==================== CẤU HÌNH HUẤN LUYỆN ====================
     DATA_PATH = "data/vivos"
-    BATCH_SIZE = 256                    # Phù hợp với 16GB VRAM của Colab T4
+    BATCH_SIZE = 64                    # Phù hợp với 16GB VRAM của Colab T4
     NUM_EPOCHS = 100                   # Tăng số epoch
     LEARNING_RATE = 1e-3               # LR khởi tạo
     HIDDEN_DIM = 512                   # Tăng số hidden dim cho mô hình sâu hơn
@@ -214,6 +221,8 @@ def main():
 
     # ==================== Thiết bị ====================
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == 'cuda':
+        torch.backends.cudnn.benchmark = True
     print(f"[Device] Using: {device}")
     print(f"[Config] BATCH_SIZE={BATCH_SIZE}, EPOCHS={NUM_EPOCHS}, LR={LEARNING_RATE}")
     print(f"[Config] HIDDEN_DIM={HIDDEN_DIM}, NUM_LAYERS={NUM_LAYERS}, DROPOUT={DROPOUT}")
@@ -250,13 +259,20 @@ def main():
         augment=False,
     )
 
+    # Tự động lấy số luồng CPU (Colab thường có 2)
+    num_cpus = os.cpu_count() or 2
+    workers_train = min(4, num_cpus)
+    workers_test = min(2, num_cpus)
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=BATCH_SIZE,
         shuffle=True,
         collate_fn=lambda batch: collate_fn(batch, char_to_idx, MAX_SEQ_LEN),
         pin_memory=True,
-        num_workers=2,
+        num_workers=workers_train,
+        persistent_workers=(workers_train > 0),
+        prefetch_factor=2 if workers_train > 0 else None,
     )
     test_loader = DataLoader(
         test_dataset,
@@ -264,7 +280,9 @@ def main():
         shuffle=False,
         collate_fn=lambda batch: collate_fn(batch, char_to_idx, MAX_SEQ_LEN),
         pin_memory=True,
-        num_workers=1,
+        num_workers=workers_test,
+        persistent_workers=(workers_test > 0),
+        prefetch_factor=2 if workers_test > 0 else None,
     )
 
     # ==================== Bước 3: Khởi tạo mô hình ====================
@@ -300,6 +318,9 @@ def main():
         min_factor=0.01,
     )
 
+    # AMP Scaler
+    scaler = torch.cuda.amp.GradScaler(enabled=(device.type == 'cuda'))
+
     # ==================== Bước 7: Vòng lặp huấn luyện ====================
     print("\n" + "=" * 60)
     print("START TRAINING")
@@ -311,7 +332,7 @@ def main():
 
     for epoch in range(1, NUM_EPOCHS + 1):
         train_loss = train_one_epoch(
-            model, train_loader, ctc_loss_fn, optimizer, device, char_to_idx
+            model, train_loader, ctc_loss_fn, optimizer, device, char_to_idx, scaler
         )
 
         val_loss = validate(

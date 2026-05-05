@@ -1,6 +1,8 @@
+import os
 import torch
 from torch.utils.data import Dataset
 import numpy as np
+import concurrent.futures
 from audio_processing.preprocess import preprocess_with_speed, MAX_LEN
 
 
@@ -19,7 +21,8 @@ class VivosDataset(Dataset):
 
             speeds = [0.9, 1.0, 1.1] if speed_perturb else [1.0]
 
-            for sample in dataset:
+            def process_sample(sample):
+                feats = []
                 audio_path = sample["audio"]
                 for sp in speeds:
                     feat = preprocess_with_speed(
@@ -29,8 +32,18 @@ class VivosDataset(Dataset):
                         speed_factor=sp,
                         apply_gain=augment and sp != 1.0,
                     )
-                    self.features.append(torch.tensor(feat, dtype=torch.float32))
-                    self.texts.append(sample["text"])
+                    feats.append((torch.tensor(feat, dtype=torch.float32), sample["text"]))
+                return feats
+
+            num_workers = os.cpu_count() or 2
+            print(f"[Dataset] Precomputing with ThreadPoolExecutor (max_workers={num_workers})...")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+                results = list(executor.map(process_sample, dataset))
+                
+            for res in results:
+                for feat, text in res:
+                    self.features.append(feat)
+                    self.texts.append(text)
 
             print(f"[Dataset] Precomputed {len(self.features)} MFCC samples"
                   f" (speed_perturb={speed_perturb}, use_delta={use_delta})")
