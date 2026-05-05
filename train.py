@@ -131,7 +131,7 @@ def train_one_epoch(model, dataloader, ctc_loss_fn, optimizer, device, char_to_i
 
         optimizer.zero_grad(set_to_none=True)
 
-        with torch.cuda.amp.autocast(enabled=(device.type == 'cuda')):
+        with torch.amp.autocast('cuda', enabled=(device.type == 'cuda')):
             log_probs = model(features)
             log_probs = log_probs.permute(1, 0, 2)  # (T, N, C)
 
@@ -143,7 +143,7 @@ def train_one_epoch(model, dataloader, ctc_loss_fn, optimizer, device, char_to_i
         
         # Unscales the gradients of optimizer's assigned params in-place
         scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
         
         scaler.step(optimizer)
         scaler.update()
@@ -205,8 +205,8 @@ def main():
     DATA_PATH = "data/vivos"
     BATCH_SIZE = 64                    # Phù hợp với 16GB VRAM của Colab T4
     NUM_EPOCHS = 100                   # Tăng số epoch
-    LEARNING_RATE = 1e-3               # LR khởi tạo
-    HIDDEN_DIM = 512                   # Tăng số hidden dim cho mô hình sâu hơn
+    LEARNING_RATE = 5e-4               # Lower LR for stability
+    HIDDEN_DIM = 768                   # Tăng số hidden dim cho mô hình sâu hơn
     NUM_LAYERS = 3                     # Tăng số lớp cho Colab T4
     DROPOUT = 0.3                      # Droput vừa phải
     WEIGHT_DECAY = 1e-4                # Weight decay cho AdamW
@@ -319,7 +319,7 @@ def main():
     )
 
     # AMP Scaler
-    scaler = torch.cuda.amp.GradScaler(enabled=(device.type == 'cuda'))
+    scaler = torch.amp.GradScaler('cuda', enabled=(device.type == 'cuda'))
 
     # ==================== Bước 7: Vòng lặp huấn luyện ====================
     print("\n" + "=" * 60)
