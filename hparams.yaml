@@ -1,0 +1,19 @@
+# Seed needs to be set at top of yaml, before objects with parameters are made
+seed: 1986
+__set_seed: !apply:torch.manual_seed [!ref <seed>]
+
+# Training params
+number_of_epochs: 100
+lr: 3.0e-4
+warmup_epochs: 5
+weight_decay: 1.0e-4
+max_grad_norm: 2.0
+batch_size: 64
+hidden_dim: 512
+num_layers: 3
+dropout: 0.4
+input_dim: 39
+
+# We don't define model here yet, because the native PyTorch Dataloader and Vocabulary
+# depend on custom Python code. We'll instantiate the model in Python and pass it to Brain.
+# However, we can track parameters.

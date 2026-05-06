@@ -76,12 +76,12 @@ def _load_model(model_path: str = None):
     # ---- Load checkpoint ----
     checkpoint = torch.load(model_path, map_location=_device, weights_only=False)
 
-    # Lấy các tham số từ checkpoint
+    # Lấy các tham số từ checkpoint (fallback matches train.py defaults)
     num_classes = checkpoint["num_classes"]
-    hidden_dim = checkpoint.get("hidden_dim", 256)
+    hidden_dim = checkpoint.get("hidden_dim", 512)
     num_layers = checkpoint.get("num_layers", 3)
-    dropout = checkpoint.get("dropout", 0.3)
-    input_dim = checkpoint.get("input_dim", 13)
+    dropout = checkpoint.get("dropout", 0.4)
+    input_dim = checkpoint.get("input_dim", 39)
     _idx_to_char = checkpoint["idx_to_char"]
 
     # ---- Khởi tạo lại kiến trúc và load trọng số ----

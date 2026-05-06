@@ -1,30 +1,24 @@
 """
 train.py
 ========
-Script huấn luyện mô hình Nhận diện Giọng nói (Speech Recognition)
-sử dụng dataset VIVOS và kiến trúc Bidirectional LSTM + CTC Loss.
-
-Cải tiến cho dataset nhỏ (15h):
-  - Speed perturbation (0.9x, 1.0x, 1.1x) → dataset ×3
-  - SpecAugment (time masking + frequency masking)
-  - Delta + Delta-Delta features (13→39)
-  - Warmup + Cosine Annealing LR schedule
-  - Tăng dropout, giảm model size, giảm batch size
-  - Volume augmentation
+Refactored using SpeechBrain.
 """
 
 import os
 import sys
 import math
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+import speechbrain as sb
+from hyperpyyaml import load_hyperpyyaml
+import jiwer
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__))))
 
 from audio_processing.dataset import build_dataset
 from audio_processing.dataloader import VivosDataset
-from audio_processing.preprocess import MAX_LEN
 from model.network import SpeechRecognitionModel
 
 
@@ -80,7 +74,7 @@ def encode_text(text: str, char_to_idx: dict) -> list:
     return indices
 
 
-def collate_fn(batch, char_to_idx: dict, max_len: int = MAX_LEN):
+def collate_fn(batch, char_to_idx: dict):
     features_list = []
     target_list = []
     target_lengths_list = []
@@ -103,86 +97,110 @@ def collate_fn(batch, char_to_idx: dict, max_len: int = MAX_LEN):
 
 
 # ================================================================
-# 2. HÀM HUẤN LUYỆN MỘT EPOCH
+# 2. SPEECHBRAIN CLASS
 # ================================================================
-def train_one_epoch(model, dataloader, ctc_loss_fn, optimizer, device, char_to_idx, scaler):
-    model.train()
-    total_loss = 0.0
-    num_batches = 0
-
-    for batch_data in dataloader:
-        features, targets, input_lengths, target_lengths = batch_data
-        features = features.to(device)
-        targets = targets.to(device)
-        input_lengths = input_lengths.to(device)
-        target_lengths = target_lengths.to(device)
-
-        optimizer.zero_grad(set_to_none=True)
-
-        with torch.amp.autocast('cuda', enabled=(device.type == 'cuda')):
-            log_probs = model(features)
-            log_probs = log_probs.permute(1, 0, 2)  # (T, N, C)
-
-            loss = ctc_loss_fn(log_probs, targets, input_lengths, target_lengths)
-
-        scaler.scale(loss).backward()
+class ASRBrain(sb.Brain):
+    def compute_forward(self, batch, stage):
+        features, targets, input_lengths, target_lengths = batch
+        features = features.to(self.device)
         
-        # Unscales the gradients of optimizer's assigned params in-place
-        scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
+        log_probs = self.modules.model(features)
+        log_probs = log_probs.permute(1, 0, 2)  # (T, N, C) for CTCLoss
+        return log_probs
+
+    def compute_objectives(self, predictions, batch, stage):
+        features, targets, input_lengths, target_lengths = batch
+        targets = targets.to(self.device)
+        input_lengths = input_lengths.to(self.device)
+        target_lengths = target_lengths.to(self.device)
+
+        loss = self.hparams["ctc_loss"](predictions, targets, input_lengths, target_lengths)
         
-        scaler.step(optimizer)
-        scaler.update()
+        # Compute CER on validation/test
+        if stage != sb.Stage.TRAIN:
+            idx_to_char = self.hparams["idx_to_char"]
+            pred_inds = torch.argmax(predictions, dim=-1)  # (T, N)
+            
+            offset = 0
+            for n in range(pred_inds.size(1)):
+                # Decode prediction (CTC collapse)
+                prev = -1
+                pred_chars = []
+                for t in range(pred_inds.size(0)):
+                    idx = int(pred_inds[t, n].item())
+                    if idx == 0:
+                        prev = -1
+                        continue
+                    if idx != prev:
+                        char = idx_to_char.get(idx, "")
+                        if char and char != "<blank>":
+                            pred_chars.append(char)
+                    prev = idx
+                pred_text = "".join(pred_chars)
+                
+                # Decode target
+                tgt_len = int(target_lengths[n].item())
+                tgt_inds = targets[offset:offset + tgt_len].tolist()
+                offset += tgt_len
+                tgt_text = "".join(idx_to_char.get(i, "") for i in tgt_inds)
+                
+                self.cer_metrics.append(tgt_text)
+                self.cer_metrics.append(pred_text)
+        
+        return loss
 
-        total_loss += loss.item()
-        num_batches += 1
+    def on_stage_start(self, stage, epoch):
+        if stage == sb.Stage.TRAIN:
+            if not hasattr(self, "scheduler_init"):
+                self.scheduler = self.hparams["lr_scheduler"](
+                    self.optimizer, 
+                    self.hparams["warmup_epochs"], 
+                    self.hparams["number_of_epochs"]
+                )
+                self.scheduler_init = True
+        if stage != sb.Stage.TRAIN:
+            self.cer_metrics = []  # interleaved [ref, hyp, ref, hyp, ...]
 
-    avg_loss = total_loss / max(num_batches, 1)
-    return avg_loss
-
+    def on_stage_end(self, stage, stage_loss, epoch):
+        if stage == sb.Stage.VALID:
+            if hasattr(self, "scheduler"):
+                self.scheduler.step()
+            
+            # Compute CER
+            cer_str = "N/A"
+            if hasattr(self, "cer_metrics") and len(self.cer_metrics) >= 2:
+                refs = self.cer_metrics[0::2]
+                hyps = self.cer_metrics[1::2]
+                cer_val = jiwer.cer(refs, hyps)
+                cer_str = f"{cer_val:.2%}"
+            
+            print(f"Epoch {epoch} | Val Loss: {stage_loss:.4f} | CER: {cer_str} | LR: {self.optimizer.param_groups[0]['lr']:.2e}")
+            
+            # Save best model based on validation loss
+            if not hasattr(self, "best_val_loss") or stage_loss < self.best_val_loss:
+                self.best_val_loss = stage_loss
+                model_path = os.path.join("saved_models", "model.pth")
+                torch.save(
+                    {
+                        "epoch": epoch,
+                        "model_state_dict": self.modules.model.state_dict(),
+                        "optimizer_state_dict": self.optimizer.state_dict(),
+                        "val_loss": stage_loss,
+                        "cer": cer_val if cer_str != "N/A" else None,
+                        "char_to_idx": self.hparams["char_to_idx"],
+                        "idx_to_char": self.hparams["idx_to_char"],
+                        "num_classes": self.hparams["num_classes"],
+                        "hidden_dim": self.hparams["hidden_dim"],
+                        "num_layers": self.hparams["num_layers"],
+                        "dropout": self.hparams["dropout"],
+                        "input_dim": self.hparams["input_dim"],
+                    },
+                    model_path,
+                )
+                print(f"  >>> Saved best model (Val Loss: {stage_loss:.4f}, CER: {cer_str})")
 
 # ================================================================
-# 3. HÀM ĐÁNH GIÁ (VALIDATION)
-# ================================================================
-@torch.no_grad()
-def validate(model, dataloader, ctc_loss_fn, device, char_to_idx):
-    model.eval()
-    total_loss = 0.0
-    num_batches = 0
-
-    for batch_data in dataloader:
-        features, targets, input_lengths, target_lengths = batch_data
-        features = features.to(device)
-        targets = targets.to(device)
-        input_lengths = input_lengths.to(device)
-        target_lengths = target_lengths.to(device)
-
-        log_probs = model(features)
-        log_probs = log_probs.permute(1, 0, 2)
-
-        loss = ctc_loss_fn(log_probs, targets, input_lengths, target_lengths)
-
-        total_loss += loss.item()
-        num_batches += 1
-
-    avg_loss = total_loss / max(num_batches, 1)
-    return avg_loss
-
-
-# ================================================================
-# 4. WARMUP + COSINE ANNEALING SCHEDULER
-# ================================================================
-def get_warmup_cosine_scheduler(optimizer, warmup_epochs, total_epochs, min_factor=0.01):
-    def lr_lambda(epoch):
-        if epoch < warmup_epochs:
-            return (epoch + 1) / warmup_epochs
-        progress = (epoch - warmup_epochs) / max(total_epochs - warmup_epochs, 1)
-        return min_factor + 0.5 * (1.0 - min_factor) * (1 + math.cos(math.pi * progress))
-    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-
-
-# ================================================================
-# 5. HÀM CHÍNH – MAIN
+# 3. HÀM CHÍNH – MAIN
 # ================================================================
 def main():
     # ==================== CẤU HÌNH HUẤN LUYỆN ====================
@@ -200,8 +218,6 @@ def main():
     AUGMENT = True                     # Volume augmentation
     INPUT_DIM = 39 if USE_DELTA else 13
     SAVE_DIR = "saved_models"
-    MODEL_PATH = os.path.join(SAVE_DIR, "model.pth")
-    MAX_SEQ_LEN = MAX_LEN             # 300 (tăng từ 200)
 
     # ==================== Thiết bị ====================
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -211,7 +227,6 @@ def main():
     print(f"[Config] BATCH_SIZE={BATCH_SIZE}, EPOCHS={NUM_EPOCHS}, LR={LEARNING_RATE}")
     print(f"[Config] HIDDEN_DIM={HIDDEN_DIM}, NUM_LAYERS={NUM_LAYERS}, DROPOUT={DROPOUT}")
     print(f"[Config] USE_DELTA={USE_DELTA}, SPEED_PERTURB={SPEED_PERTURB}, INPUT_DIM={INPUT_DIM}")
-    print(f"[Config] MAX_SEQ_LEN={MAX_SEQ_LEN}")
 
     os.makedirs(SAVE_DIR, exist_ok=True)
 
@@ -252,7 +267,7 @@ def main():
         train_dataset,
         batch_size=BATCH_SIZE,
         shuffle=True,
-        collate_fn=lambda batch: collate_fn(batch, char_to_idx, MAX_SEQ_LEN),
+        collate_fn=lambda batch: collate_fn(batch, char_to_idx),
         pin_memory=True,
         num_workers=workers_train,
         persistent_workers=(workers_train > 0),
@@ -262,111 +277,89 @@ def main():
         test_dataset,
         batch_size=BATCH_SIZE,
         shuffle=False,
-        collate_fn=lambda batch: collate_fn(batch, char_to_idx, MAX_SEQ_LEN),
+        collate_fn=lambda batch: collate_fn(batch, char_to_idx),
         pin_memory=True,
         num_workers=workers_test,
         persistent_workers=(workers_test > 0),
         prefetch_factor=2 if workers_test > 0 else None,
     )
 
-    # ==================== Bước 3: Khởi tạo mô hình ====================
+    # ==================== Bước 3: Đọc Hparams & Khởi tạo ====================
+    print("\n[Settings] Reading hparams...")
+    hparams_file = "hparams.yaml"
+    with open(hparams_file) as fin:
+        hparams = load_hyperpyyaml(fin)
+    
+    # Set seed for full reproducibility (torch set in YAML, add numpy/cuda here)
+    np.random.seed(hparams["seed"])
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(hparams["seed"])
+        torch.backends.cudnn.deterministic = True
+    
     print("\n[Model] Initializing SpeechRecognitionModel...")
     model = SpeechRecognitionModel(
-        input_dim=INPUT_DIM,
-        hidden_dim=HIDDEN_DIM,
-        num_layers=NUM_LAYERS,
+        input_dim=hparams["input_dim"],
+        hidden_dim=hparams["hidden_dim"],
+        num_layers=hparams["num_layers"],
         num_classes=num_classes,
-        dropout=DROPOUT,
+        dropout=hparams["dropout"],
     ).to(device)
-
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"[Model] Total params:        {total_params:,}")
-    print(f"[Model] Trainable params:    {trainable_params:,}")
-
-    # ==================== Bước 4: CTC Loss ====================
+    
+    # Loss
     ctc_loss_fn = nn.CTCLoss(blank=0, zero_infinity=True)
-
-    # ==================== Bước 5: Optimizer – AdamW ====================
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=LEARNING_RATE,
-        weight_decay=WEIGHT_DECAY,
+    
+    hparams["model"] = model
+    hparams["ctc_loss"] = ctc_loss_fn
+    hparams["epoch_counter"] = sb.utils.epoch_loop.EpochCounter(limit=hparams["number_of_epochs"])
+    hparams["char_to_idx"] = char_to_idx
+    hparams["idx_to_char"] = idx_to_char
+    hparams["num_classes"] = num_classes
+    
+    # Pass lambda as opt_class for Speechbrain
+    opt_class = lambda x: torch.optim.AdamW(
+        x, 
+        lr=hparams["lr"],
+        weight_decay=hparams["weight_decay"]
     )
-
-    # ==================== Bước 6: Warmup + Cosine Annealing ====================
-    scheduler = get_warmup_cosine_scheduler(
-        optimizer,
-        warmup_epochs=WARMUP_EPOCHS,
-        total_epochs=NUM_EPOCHS,
-        min_factor=0.01,
+    
+    def get_warmup_cosine_scheduler(optimizer, warmup_epochs, total_epochs, min_factor=0.01):
+        def lr_lambda(epoch):
+            if epoch < warmup_epochs:
+                return (epoch + 1) / warmup_epochs
+            progress = (epoch - warmup_epochs) / max(total_epochs - warmup_epochs, 1)
+            return min_factor + 0.5 * (1.0 - min_factor) * (1 + math.cos(math.pi * progress))
+        return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+        
+    hparams["lr_scheduler"] = get_warmup_cosine_scheduler
+    
+    # Initialize Brain
+    asr_brain = ASRBrain(
+        modules={"model": model},
+        opt_class=opt_class,
+        hparams=hparams,
+        run_opts={"device": device, "amp": (device.type == "cuda")},
+        checkpointer=sb.utils.checkpoints.Checkpointer(
+            checkpoints_dir=SAVE_DIR,
+            recoverables={"model": model, "counter": hparams["epoch_counter"]}
+        ),
     )
-
-    # AMP Scaler
-    scaler = torch.amp.GradScaler('cuda', enabled=(device.type == 'cuda'))
-
-    # ==================== Bước 7: Vòng lặp huấn luyện ====================
+    
+    # ==================== Bước 4: Vòng lặp huấn luyện ====================
     print("\n" + "=" * 60)
-    print("START TRAINING")
+    print("START TRAINING (SPEECHBRAIN)")
     print("=" * 60)
 
-    best_val_loss = float("inf")
-    patience_counter = 0
-    EARLY_STOP_PATIENCE = 15  # Tăng patience vì loss dao động hơn với augmentation
-
-    for epoch in range(1, NUM_EPOCHS + 1):
-        train_loss = train_one_epoch(
-            model, train_loader, ctc_loss_fn, optimizer, device, char_to_idx, scaler
-        )
-
-        val_loss = validate(
-            model, test_loader, ctc_loss_fn, device, char_to_idx
-        )
-
-        scheduler.step()
-        current_lr = optimizer.param_groups[0]["lr"]
-
-        print(
-            f"Epoch {epoch:3d}/{NUM_EPOCHS} | "
-            f"Train Loss: {train_loss:.4f} | "
-            f"Val Loss: {val_loss:.4f} | "
-            f"LR: {current_lr:.2e}"
-        )
-
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            patience_counter = 0
-
-            torch.save(
-                {
-                    "epoch": epoch,
-                    "model_state_dict": model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "scheduler_state_dict": scheduler.state_dict(),
-                    "val_loss": val_loss,
-                    "char_to_idx": char_to_idx,
-                    "idx_to_char": idx_to_char,
-                    "num_classes": num_classes,
-                    "hidden_dim": HIDDEN_DIM,
-                    "num_layers": NUM_LAYERS,
-                    "dropout": DROPOUT,
-                    "input_dim": INPUT_DIM,
-                },
-                MODEL_PATH,
-            )
-            print(f"  >>> Saved best model (Val Loss: {val_loss:.4f})")
-        else:
-            patience_counter += 1
-            if patience_counter >= EARLY_STOP_PATIENCE:
-                print(f"\n[Early Stopping] Stopped at epoch {epoch} (no improvement).")
-                break
+    asr_brain.fit(
+        epoch_counter=hparams["epoch_counter"],
+        train_set=train_loader,
+        valid_set=test_loader,
+    )
 
     print("\n" + "=" * 60)
-    print(f"TRAINING COMPLETED")
-    print(f"Best Val Loss: {best_val_loss:.4f}")
-    print(f"Model saved at: {MODEL_PATH}")
+    print("TRAINING COMPLETED")
     print("=" * 60)
 
 
 if __name__ == "__main__":
     main()
+

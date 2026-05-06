@@ -28,19 +28,28 @@ class BatchRNN(nn.Module):
         self.bidirectional = bidirectional
         self.batch_norm = SequenceWise(nn.BatchNorm1d(input_size)) if batch_norm else None
         self.rnn = rnn_type(input_size=input_size, hidden_size=hidden_size,
-                            bidirectional=bidirectional, bias=True)
+                            bidirectional=bidirectional, bias=True, batch_first=False)
         self.num_directions = 2 if bidirectional else 1
 
     def forward(self, x, output_lengths):
         if self.batch_norm is not None:
             x = self.batch_norm(x)
         
-        # RNN requires format (seq_len, batch, input_size)
+        # Pack padded sequence for efficiency
+        if output_lengths is not None:
+            total_len = x.size(0)
+            lengths_cpu = output_lengths.cpu() if output_lengths.is_cuda else output_lengths
+            lengths_cpu = lengths_cpu.clamp(max=total_len)
+            x = torch.nn.utils.rnn.pack_padded_sequence(x, lengths_cpu, enforce_sorted=False)
+        
         x, _ = self.rnn(x)
         
+        if output_lengths is not None:
+            x, _ = torch.nn.utils.rnn.pad_packed_sequence(x)
+        
         if self.bidirectional:
-            # (seq_len, batch, hidden_size * 2) -> (seq_len, batch, hidden_size)
-            x = x.view(x.size(0), x.size(1), 2, -1).sum(2).view(x.size(0), x.size(1), -1)
+            # Concat forward+backward (no sum): (seq_len, batch, hidden_size*2)
+            pass
             
         return x
 
@@ -93,20 +102,21 @@ class SpeechRecognitionModel(nn.Module):
             
         conv_out_dim = calculate_conv_out_size(input_dim)
         rnn_input_size = conv_out_dim * 32
+        rnn_output_size = hidden_dim * 2  # bidirectional concat
 
         rnns = []
         rnn = BatchRNN(input_size=rnn_input_size, hidden_size=hidden_dim, rnn_type=rnn_type, 
                        bidirectional=True, batch_norm=False)
         rnns.append(("0", rnn))
         for x in range(num_layers - 1):
-            rnn = BatchRNN(input_size=hidden_dim, hidden_size=hidden_dim, rnn_type=rnn_type, 
+            rnn = BatchRNN(input_size=rnn_output_size, hidden_size=hidden_dim, rnn_type=rnn_type, 
                            bidirectional=True, batch_norm=True)
             rnns.append((f"{x+1}", rnn))
             
         self.rnns = nn.Sequential(OrderedDict(rnns))
         self.fc = nn.Sequential(
-            SequenceWise(nn.BatchNorm1d(hidden_dim)),
-            nn.Linear(hidden_dim, num_classes, bias=False)
+            SequenceWise(nn.BatchNorm1d(rnn_output_size)),
+            nn.Linear(rnn_output_size, num_classes, bias=False)
         )
 
     def forward(self, x: torch.Tensor, output_lengths=None) -> torch.Tensor:
