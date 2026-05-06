@@ -337,7 +337,7 @@ def main():
         modules={"model": model},
         opt_class=opt_class,
         hparams=hparams,
-        run_opts={"device": device, "amp": (device.type == "cuda")},
+        run_opts={"device": device, "auto_mix_prec": (device.type == "cuda")},
         checkpointer=sb.utils.checkpoints.Checkpointer(
             checkpoints_dir=SAVE_DIR,
             recoverables={"model": model, "counter": hparams["epoch_counter"]}
