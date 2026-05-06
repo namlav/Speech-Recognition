@@ -49,15 +49,13 @@ else:
                 data = np.array(self.buffer)
                 self.buffer = []
 
+                # save temp
+                temp_path = "temp_realtime.wav"
                 import soundfile as sf
-                import tempfile
 
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-                    tmp_path = tmp.name
-                    sf.write(tmp_path, data, 16000)
+                sf.write(temp_path, data, 16000)
 
-                text = predict(tmp_path)
-                os.unlink(tmp_path)  # clean up
+                text = predict(temp_path)
 
                 print("Realtime:", text)
 

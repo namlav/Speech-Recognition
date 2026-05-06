@@ -1,7 +1,6 @@
 numpy
 librosa
 torch
-transformers
 speechbrain
 hyperpyyaml
 streamlit
