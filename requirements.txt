@@ -1,7 +1,10 @@
 numpy
 librosa
 torch
+speechbrain
+hyperpyyaml
 streamlit
 streamlit-webrtc
 soundfile
 matplotlib
+jiwer
