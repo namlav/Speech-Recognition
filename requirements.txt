@@ -4,3 +4,10 @@ torch
 soundfile
 gradio
 matplotlib
+speechbrain
+hyperpyyaml
+streamlit
+streamlit-webrtc
+soundfile
+matplotlib
+jiwer

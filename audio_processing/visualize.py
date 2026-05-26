@@ -19,3 +19,4 @@ def plot_mfcc(file_path):
     plt.colorbar()
     plt.title("MFCC")
     return plt.gcf() # Trả về hình ảnh để Gradio hiển thị
+    plt.show()

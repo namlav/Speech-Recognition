@@ -133,3 +133,62 @@ with gr.Blocks(title="AI Speech Recognition") as demo:
 
 if __name__ == "__main__":
     demo.launch(share=False, theme=custom_theme)
+from model.inferences import predict
+
+st.title("🎤 Speech Recognition Demo")
+
+mode = st.radio("Chọn chế độ:", ["Upload file", "Realtime Mic"])
+
+# =========================
+# 📂 FILE MODE
+# =========================
+if mode == "Upload file":
+    uploaded_file = st.file_uploader("Upload WAV", type=["wav"])
+
+    if uploaded_file:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp.write(uploaded_file.read())
+            path = tmp.name
+
+        st.audio(path)
+
+        if st.button("Transcribe File"):
+            text = predict(path)
+            st.success(text)
+
+# =========================
+# 🎤 REALTIME MODE
+# =========================
+else:
+    st.write("🎙️ Nói vào mic...")
+
+    class AudioProcessor(AudioProcessorBase):
+        def __init__(self):
+            self.buffer = []
+
+        def recv(self, frame):
+            audio = frame.to_ndarray().flatten()
+            self.buffer.extend(audio.tolist())
+
+            # xử lý mỗi ~2s audio
+            if len(self.buffer) > 32000:
+                data = np.array(self.buffer)
+                self.buffer = []
+
+                # save temp
+                temp_path = "temp_realtime.wav"
+                import soundfile as sf
+
+                sf.write(temp_path, data, 16000)
+
+                text = predict(temp_path)
+
+                print("Realtime:", text)
+
+            return frame
+
+    webrtc_streamer(
+        key="speech",
+        audio_processor_factory=AudioProcessor,
+        media_stream_constraints={"audio": True, "video": False},
+    )

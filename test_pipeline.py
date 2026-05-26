@@ -1,6 +1,10 @@
+import matplotlib
+matplotlib.use("Agg")  # non-interactive backend, works headless
+
 from audio_processing.dataset import build_dataset
 from audio_processing.preprocess import preprocess
 from audio_processing.visualize import plot_waveform, plot_mfcc
+import matplotlib.pyplot as plt
 
 DATA_PATH = "data/vivos"
 
@@ -19,6 +23,12 @@ print("Text:", sample["text"])
 features = preprocess(sample["audio"])
 print("Feature shape:", features.shape)
 
-# Visualize
+# Visualize (save to file instead of showing)
 plot_waveform(sample["audio"])
+plt.savefig("waveform.png")
+plt.close()
+
 plot_mfcc(sample["audio"])
+plt.savefig("mfcc.png")
+plt.close()
+print("Saved waveform.png and mfcc.png")
