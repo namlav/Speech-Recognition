@@ -1,6 +1,9 @@
 numpy
 librosa
 torch
+soundfile
+gradio
+matplotlib
 speechbrain
 hyperpyyaml
 streamlit
