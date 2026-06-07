@@ -1,6 +1,10 @@
-numpy
-librosa
 torch
-streamlit
-streamlit-webrtc
-soundfile
+torchaudio
+transformers
+datasets
+numpy
+matplotlib
+tqdm
+gradio
+jiwer
+librosa
