@@ -28,6 +28,10 @@ Thumbs.db
 # Logs
 *.log
 
+# Gradio temp files
+gradio_temp/
+.gradio/
+
 # Machine Learning / Deep Learning Model Weights
 *.pt
 *.pth

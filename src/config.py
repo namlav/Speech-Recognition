@@ -1,0 +1,24 @@
+import torch
+
+BATCH_SIZE = 32
+TRAINING_ITERATIONS = 10000
+EVAL_ITERATIONS = 500
+LEARNING_RATE = 5e-4
+NUM_WORKERS = 4
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+TOKENIZER_NAME = "nguyenvulebinh/wav2vec2-base-vietnamese-250h"
+
+SAMPLING_RATE = 16000
+N_MELS = 80
+TOP_DB = 80.0
+
+CONV_IN_CHANNELS = 1
+CONV_OUT_CHANNELS = 32
+RNN_HIDDEN_SIZE = 512
+RNN_DEPTH = 5
+
+SPECAUG_FREQ_MASK_PARAM = 15
+SPECAUG_TIME_MASK_PARAM = 35
+
+BEST_WEIGHTS_PATH = "weights/best_weights.pt"

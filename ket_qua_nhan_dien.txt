@@ -1,1 +1,0 @@
-Xin chào giảng viên, đây là bài kiểm tra nhận diện một người nói. Nhóm chúng em xin trình bày đồ án Deep Learning sử dụng mô hình RNN.
